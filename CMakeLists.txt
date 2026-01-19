@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
 project(vllm_ascend_C)
 
+include_directories(/usr/local/lib/python3.11/site-packages/torch_npu/include)
+link_directories(/usr/local/lib/python3.11/site-packages/torch_npu/lib)
+
 # include(CheckCXXcompilerFlag)
 # check_cxx_compiler_flag("-std=c++17", COMPILER_SUPPORTS_CXX17)
 set(CMAKE_CXX_STANDARD 17)
