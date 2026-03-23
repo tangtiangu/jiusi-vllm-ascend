@@ -283,16 +283,12 @@ class CustomDeepseekV2ForCausalLM(DeepseekV2ForCausalLM):
                     continue
 
             if self.afd_role == "attention" and self.is_moe_weight(name):
-                # We need to distinguish between MoE layer weights and Dense layer weights.
-                # Dense layers (before first_k_dense_replace) are initialized in Attention role.
+                # In AFD attention role, all decoder FFN (dense + MoE) runs on ffn server.
                 import re
                 layer_match = re.search(r"model\.layers\.(\d+)\.", name)
                 if layer_match:
                     layer_idx = int(layer_match.group(1))
-                    if layer_idx < self.config.first_k_dense_replace:
-                         # This is a dense layer, not an MoE layer, so we should not skip it
-                         pass
-                    else:
+                    if layer_idx < self.config.num_hidden_layers:
                         continue
                 else:
                     continue

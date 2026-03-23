@@ -279,12 +279,27 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                                                    self.rank,
                                                    self.ffn_size,
                                                    self.attn_size,
-                                                   self.hf_config.n_routed_experts,
+                                                   moe_expert_num,
                                                    self.max_num_reqs,
                                                    self.hf_config.hidden_size,
                                                    k,
                                                    multistream_enable,
                                                    self.aiv_num), None
+
+    # ATTN发给FFN（ATTN发送, dense层专用）
+    def send_attn_hidden_states(self,
+                                hidden_states: torch.Tensor,
+                                metadata: Optional[AFDConnectorMetadata] = None,
+                                **kwargs) -> Any:
+        multistream_enable = self.config.afd_config.is_multistream
+        return torch.ops.vllm.cam_send_attn_hidden_states(hidden_states,
+                                                          self.hccl_comm_name,
+                                                          self.hccl_comm_name2,
+                                                          self.hccl_comm_name3,
+                                                          self.rank,
+                                                          self.ffn_size,
+                                                          self.attn_size,
+                                                          multistream_enable), None
 
     # MOE发给ATTN（ATTN接收）
     def recv_ffn_output(self,
@@ -298,6 +313,19 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                                                   self.ffn_size,
                                                   self.attn_size,
                                                   self.config.afd_config.is_multistream)
+
+    # FFN发给ATTN（ATTN接收, dense层专用）
+    def recv_ffn_hidden_states(self,
+                               hidden_states: Optional[torch.Tensor] = None,
+                               metadata: Optional["AFDConnectorMetadata"] = None) -> torch.Tensor:
+        return torch.ops.vllm.cam_recv_ffn_hidden_states(hidden_states,
+                                                         self.hccl_comm_name,
+                                                         self.hccl_comm_name2,
+                                                         self.hccl_comm_name3,
+                                                         self.rank,
+                                                         self.ffn_size,
+                                                         self.attn_size,
+                                                         self.config.afd_config.is_multistream)
 
     # MOE发给ATTN(MOE发送)
     def send_ffn_output(self, ffn_output: torch.Tensor, metadata: CAMP2PAFDConnectorMetadata, **kwargs):
