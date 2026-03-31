@@ -63,6 +63,7 @@ def init_eplb_config(ascend_config, layer_id, moe_config):
     global_placement = None
     eplb_enable = ascend_config.dynamic_eplb or ascend_config.expert_map_record_path
     n_redundant = ascend_config.init_redundancy_expert if eplb_enable else 0
+    logger.info(f"ttg init_eplb_config expert_map_path: {expert_map_path}")
     if expert_map_path:
         if not (os.path.exists(expert_map_path)
                 and os.access(expert_map_path, os.R_OK)):
