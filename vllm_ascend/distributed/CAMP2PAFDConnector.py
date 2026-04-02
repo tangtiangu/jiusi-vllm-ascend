@@ -271,7 +271,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             k = self.hf_config.num_experts_per_tok
             moe_expert_num = self.hf_config.n_routed_experts
 
-        multistream_enable = self.config.afd_config.is_multistream
+        multistream_enable = False if metadata.layer_idx < self.hf_config.first_k_dense_replace else self.config.afd_config.is_multistream
         if metadata.layer_idx < self.hf_config.first_k_dense_replace:
             compute_gate = 0
         else:
@@ -315,8 +315,9 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         shared_expert_num = metadata.shared_expert_num
         aiv_num = metadata.aiv_num
         handle = metadata.handle
+        layer_idx = getattr(metadata, 'layer_idx', 0)
 
-        multistream_enable = self.config.afd_config.is_multistream
+        multistream_enable = False if layer_idx < self.hf_config.first_k_dense_replace else self.config.afd_config.is_multistream
 
         groupEp = _get_group_ep(ubatch_idx, self.hccl_comm_name, self.hccl_comm_name2, self.hccl_comm_name3)
         
@@ -339,8 +340,9 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         h = metadata.h
         k = metadata.k
         aiv_num = metadata.aiv_num
+        layer_idx = getattr(metadata, 'layer_idx', 0)
         
-        multistream_enable = self.config.afd_config.is_multistream
+        multistream_enable = False if layer_idx < self.hf_config.first_k_dense_replace else self.config.afd_config.is_multistream
         if hasattr(metadata, 'layer_idx'):
             if metadata.layer_idx < self.hf_config.first_k_dense_replace:
                 compute_gate = 0
@@ -627,10 +629,7 @@ def cam_send_attn_output_impl(hidden_states: torch.Tensor,
                               compute_gate: int = 1) -> torch.Tensor:
     ubatch_idx = get_forward_context().ubatch_idx
     comm_stream = get_forward_context().afd_comm_stream
-    if hasattr(get_forward_context(), "afd_comm_events"):
-        comm_event = get_forward_context().afd_comm_events[ubatch_idx]
-    else:
-        comm_event = get_forward_context().afd_comm_event
+    comm_event = get_forward_context().afd_comm_event
     if get_forward_context().cam_afdconnector_data is None:
         cam_afdconnector_data = CAMP2PAFDConnectorMetadata(
             moe_expert_num=moe_expert_num,
@@ -702,10 +701,7 @@ def cam_recv_ffn_output_impl(hidden_states: torch.Tensor,
     cam_metadata = get_forward_context().cam_afdconnector_data
     assert cam_metadata is not None, "cam_metadata is None"
     ubatch_idx = get_forward_context().ubatch_idx
-    if hasattr(get_forward_context(), "afd_comm_events"):
-        comm_event = get_forward_context().afd_comm_events[ubatch_idx]
-    else:
-        comm_event = get_forward_context().afd_comm_event
+    comm_event = get_forward_context().afd_comm_event
     batch_size = cam_metadata.batch_size
     h = cam_metadata.h
     k = cam_metadata.k
