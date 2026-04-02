@@ -521,10 +521,6 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
                     if pending and pending_ubatch_idx < len(self.afd_comm_event_list):
                         curr_stream.wait_event(self.afd_comm_event_list[pending_ubatch_idx])
                         pending_by_ubatch[pending_ubatch_idx] = False
-                # wait_event is async. During startup/warmup (non-capture),
-                # enforce host-visible completion to avoid phase handover hangs.
-                if self.use_aclgraph and aclgraph_runtime_mode == CUDAGraphMode.NONE:
-                    curr_stream.synchronize()
                 forward_context.ffn_pending_send_by_ubatch = pending_by_ubatch
                 forward_context.ffn_has_pending_multistream_send = False
         return rank_ffn_output

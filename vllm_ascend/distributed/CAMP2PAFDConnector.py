@@ -370,6 +370,22 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         else:
             compute_gate = 1 if getattr(self.config.afd_config, 'compute_gate_on_attention', True) else 0
 
+        # Only wait for the same ubatch's previous f2a send.
+        # This preserves ubatch-level pipeline overlap while keeping
+        # communication order safe for each ubatch.
+        forward_context = get_forward_context()
+        pending_by_ubatch = getattr(forward_context, "ffn_pending_send_by_ubatch", None)
+        if self.config.afd_config.is_multistream and \
+           isinstance(pending_by_ubatch, list) and \
+           ubatch_idx < len(pending_by_ubatch) and \
+           pending_by_ubatch[ubatch_idx]:
+            comm_event = getattr(forward_context, "afd_comm_event", None)
+            if comm_event is not None:
+                curr_stream = torch.npu.current_stream()
+                comm_event.wait(curr_stream)
+            pending_by_ubatch[ubatch_idx] = False
+            forward_context.ffn_pending_send_by_ubatch = pending_by_ubatch
+
         groupEp = _get_group_ep(ubatch_idx, self.hccl_comm_name, self.hccl_comm_name2, self.hccl_comm_name3)
         outputs = torch.ops.umdk_cam_op_lib.a2e(x=torch.tensor([], dtype=torch.bfloat16, device='npu'),
                                                 expert_ids=torch.tensor([], dtype=torch.int32, device='npu'),
