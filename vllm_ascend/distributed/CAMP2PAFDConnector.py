@@ -361,9 +361,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             comm_event = get_forward_context().afd_comm_events[ubatch_idx]
         else:
             comm_event = get_forward_context().afd_comm_event
-        if multistream_enable:
-            curr_stream = torch.npu.current_stream()
-            comm_event.wait(curr_stream)
 
         outputs = torch.ops.umdk_cam_op_lib.a2e(x=torch.tensor([], dtype=torch.bfloat16, device='npu'),
                                                 expert_ids=torch.tensor([], dtype=torch.int32, device='npu'),
