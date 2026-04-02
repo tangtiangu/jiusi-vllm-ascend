@@ -316,11 +316,46 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         handle = metadata.handle
 
         groupEp = _get_group_ep(ubatch_idx, self.hccl_comm_name, self.hccl_comm_name2, self.hccl_comm_name3)
-        torch.ops.umdk_cam_op_lib.e2a(expand_x=ffn_output, atten_batch_size=handle[4],
-                                      batch_size=batch_size, hidden_size=h, topk=k,
-                                      expert_rank_size=self.ffn_size, attention_rank_size=self.attn_size,
-                                      rank=self.rank, group_ep=groupEp,
-                                      aiv_num=aiv_num)
+        # Keep parity with A-side multistream masking:
+        # dense layers and the following layer run on default stream.
+        multistream_enable = self.config.afd_config.is_multistream
+        if hasattr(metadata, 'layer_idx') and metadata.layer_idx <= self.hf_config.first_k_dense_replace:
+            multistream_enable = False
+        # Conservative guard: only enable F-side multistream masking when
+        # DBO ubatch splitting is active. Non-ubatch path is more sensitive
+        # to startup/capture phase handover and may deadlock.
+        forward_context = get_forward_context()
+        if getattr(forward_context, "num_ubatches", 1) <= 1:
+            multistream_enable = False
+
+        comm_stream = getattr(forward_context, "afd_comm_stream", None)
+        comm_event = getattr(forward_context, "afd_comm_event", None)
+        curr_stream = torch.npu.current_stream()
+        pending_by_ubatch = getattr(forward_context, "ffn_pending_send_by_ubatch", None)
+        if multistream_enable and comm_event is not None and \
+           isinstance(pending_by_ubatch, list) and \
+           ubatch_idx < len(pending_by_ubatch) and pending_by_ubatch[ubatch_idx]:
+            # Ensure same-ubatch sends are ordered, but do not block recv path.
+            comm_event.wait(curr_stream)
+            pending_by_ubatch[ubatch_idx] = False
+            forward_context.ffn_pending_send_by_ubatch = pending_by_ubatch
+
+        with npu_stream_switch_within_graph(curr_stream, comm_stream, multistream_enable):
+            torch.ops.umdk_cam_op_lib.e2a(expand_x=ffn_output, atten_batch_size=handle[4],
+                                        batch_size=batch_size, hidden_size=h, topk=k,
+                                        expert_rank_size=self.ffn_size, attention_rank_size=self.attn_size,
+                                        rank=self.rank, group_ep=groupEp,
+                                        aiv_num=aiv_num)
+            if multistream_enable and comm_event is not None:
+                comm_event.record(comm_stream)
+                forward_context.ffn_has_pending_multistream_send = True
+                pending_by_ubatch = getattr(forward_context, "ffn_pending_send_by_ubatch", None)
+                if isinstance(pending_by_ubatch, list) and ubatch_idx < len(pending_by_ubatch):
+                    pending_by_ubatch[ubatch_idx] = True
+                    forward_context.ffn_pending_send_by_ubatch = pending_by_ubatch
+                # Graph capture requires every side stream to be joined back.
+                # For the last layer there is no later op to consume this event.
+                # Joined at step tail in _ffn_forward flush for all pending ubatches.
 
         return
 
