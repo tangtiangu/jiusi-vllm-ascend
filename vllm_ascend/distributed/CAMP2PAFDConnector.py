@@ -321,8 +321,13 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         multistream_enable = self.config.afd_config.is_multistream
         if hasattr(metadata, 'layer_idx') and metadata.layer_idx <= self.hf_config.first_k_dense_replace:
             multistream_enable = False
-
+        # Conservative guard: only enable F-side multistream masking when
+        # DBO ubatch splitting is active. Non-ubatch path is more sensitive
+        # to startup/capture phase handover and may deadlock.
         forward_context = get_forward_context()
+        if getattr(forward_context, "num_ubatches", 1) <= 1:
+            multistream_enable = False
+
         comm_stream = getattr(forward_context, "afd_comm_stream", None)
         comm_event = getattr(forward_context, "afd_comm_event", None)
         curr_stream = torch.npu.current_stream()

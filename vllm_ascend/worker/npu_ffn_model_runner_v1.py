@@ -465,6 +465,7 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
                     num_tokens_across_dp=num_tokens_across_dp,
                     afd_comm_stream=self.afd_comm_stream_list[0]):
             forward_context = get_forward_context()
+            forward_context.num_ubatches = num_ubatches
             forward_context.ffn_has_pending_multistream_send = False
             forward_context.ffn_pending_send_by_ubatch = [False] * num_ubatches
             for layer_idx in range(0, self.num_layers):
