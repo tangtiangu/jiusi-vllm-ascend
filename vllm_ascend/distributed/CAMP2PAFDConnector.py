@@ -352,11 +352,13 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         else:
             compute_gate = 1 if getattr(self.config.afd_config, 'compute_gate_on_attention', True) else 0
 
-        # Wait for previous e2a(send_ffn_output) launched on comm stream.
-        # This preserves per-rank communication order while still masking
-        # e2a with the following compute on default stream.
+        # Wait only when previous layer has launched multistream e2a.
+        # In graph capture mode, waiting without an in-graph record task
+        # (e.g., layer 0) will trigger rtStreamWaitEvent errors.
         forward_context = get_forward_context()
-        if self.config.afd_config.is_multistream:
+        prev_layer_idx = metadata.layer_idx - 1 if hasattr(metadata, "layer_idx") else -1
+        prev_layer_multistream = prev_layer_idx > self.hf_config.first_k_dense_replace
+        if self.config.afd_config.is_multistream and prev_layer_multistream:
             comm_event = getattr(forward_context, "afd_comm_event", None)
             if comm_event is not None:
                 curr_stream = torch.npu.current_stream()

@@ -87,10 +87,7 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
         self.afd_comm_event_list = []
         num_ubatches = max(1, self.parallel_config.num_ubatches)
         for _ in range(num_ubatches):
-            event = torch.npu.Event()
-            # Prime the event to make the first recv_attn_output wait a no-op.
-            event.record(torch.npu.current_stream())
-            self.afd_comm_event_list.append(event)
+            self.afd_comm_event_list.append(torch.npu.Event())
         print(f'attn_size = {self.attn_size},ffn_size = {self.ffn_size}')
         if getattr(self.model_config.hf_config, "text_config",
                    None) is not None:
