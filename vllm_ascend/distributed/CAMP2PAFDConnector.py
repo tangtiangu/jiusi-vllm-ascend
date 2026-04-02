@@ -77,11 +77,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                self.config.compilation_config.mode == CompilationMode.VLLM_COMPILE and \
                not self.config.model_config.enforce_eager
 
-    def _get_total_num_layers(self) -> int:
-        if getattr(self.hf_config, "text_config", None) is not None:
-            return self.hf_config.text_config.num_hidden_layers
-        return self.hf_config.num_hidden_layers
-
     def close(self) -> None:
         """Close the connector and release resources."""
         # destroy process group
@@ -331,6 +326,15 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         comm_stream = getattr(forward_context, "afd_comm_stream", None)
         comm_event = getattr(forward_context, "afd_comm_event", None)
         curr_stream = torch.npu.current_stream()
+        pending_by_ubatch = getattr(forward_context, "ffn_pending_send_by_ubatch", None)
+        if multistream_enable and comm_event is not None and \
+           isinstance(pending_by_ubatch, list) and \
+           ubatch_idx < len(pending_by_ubatch) and pending_by_ubatch[ubatch_idx]:
+            # Ensure same-ubatch sends are ordered, but do not block recv path.
+            comm_event.wait(curr_stream)
+            pending_by_ubatch[ubatch_idx] = False
+            forward_context.ffn_pending_send_by_ubatch = pending_by_ubatch
+
         with npu_stream_switch_within_graph(curr_stream, comm_stream, multistream_enable):
             torch.ops.umdk_cam_op_lib.e2a(expand_x=ffn_output, atten_batch_size=handle[4],
                                         batch_size=batch_size, hidden_size=h, topk=k,
@@ -346,12 +350,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                     forward_context.ffn_pending_send_by_ubatch = pending_by_ubatch
                 # Graph capture requires every side stream to be joined back.
                 # For the last layer there is no later op to consume this event.
-                runtime_mode = getattr(forward_context, "cudagraph_runtime_mode", CUDAGraphMode.NONE)
-                is_capture_mode = runtime_mode != CUDAGraphMode.NONE
-                is_last_layer = hasattr(metadata, "layer_idx") and \
-                    metadata.layer_idx == self._get_total_num_layers() - 1
-                if is_capture_mode and is_last_layer:
-                    comm_event.wait(curr_stream)
+                # Joined at step tail in _ffn_forward flush for all pending ubatches.
 
         return
 
@@ -369,22 +368,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             compute_gate = 0
         else:
             compute_gate = 1 if getattr(self.config.afd_config, 'compute_gate_on_attention', True) else 0
-
-        # Only wait for the same ubatch's previous f2a send.
-        # This preserves ubatch-level pipeline overlap while keeping
-        # communication order safe for each ubatch.
-        forward_context = get_forward_context()
-        pending_by_ubatch = getattr(forward_context, "ffn_pending_send_by_ubatch", None)
-        if self.config.afd_config.is_multistream and \
-           isinstance(pending_by_ubatch, list) and \
-           ubatch_idx < len(pending_by_ubatch) and \
-           pending_by_ubatch[ubatch_idx]:
-            comm_event = getattr(forward_context, "afd_comm_event", None)
-            if comm_event is not None:
-                curr_stream = torch.npu.current_stream()
-                comm_event.wait(curr_stream)
-            pending_by_ubatch[ubatch_idx] = False
-            forward_context.ffn_pending_send_by_ubatch = pending_by_ubatch
 
         groupEp = _get_group_ep(ubatch_idx, self.hccl_comm_name, self.hccl_comm_name2, self.hccl_comm_name3)
         outputs = torch.ops.umdk_cam_op_lib.a2e(x=torch.tensor([], dtype=torch.bfloat16, device='npu'),
