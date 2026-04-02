@@ -340,6 +340,10 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             if multistream_enable and comm_event is not None:
                 comm_event.record(comm_stream)
                 forward_context.ffn_has_pending_multistream_send = True
+                pending_by_ubatch = getattr(forward_context, "ffn_pending_send_by_ubatch", None)
+                if isinstance(pending_by_ubatch, list) and ubatch_idx < len(pending_by_ubatch):
+                    pending_by_ubatch[ubatch_idx] = True
+                    forward_context.ffn_pending_send_by_ubatch = pending_by_ubatch
                 # Graph capture requires every side stream to be joined back.
                 # For the last layer there is no later op to consume this event.
                 runtime_mode = getattr(forward_context, "cudagraph_runtime_mode", CUDAGraphMode.NONE)

@@ -85,9 +85,11 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
         self.attn_size = self.connector.attn_size
         self.ffn_size = self.connector.ffn_size
         self.afd_comm_event_list = []
+        self.afd_comm_stream_list = []
         num_ubatches = max(1, self.parallel_config.num_ubatches)
         for _ in range(num_ubatches):
             self.afd_comm_event_list.append(torch.npu.Event())
+            self.afd_comm_stream_list.append(torch.npu.Stream())
         print(f'attn_size = {self.attn_size},ffn_size = {self.ffn_size}')
         if getattr(self.model_config.hf_config, "text_config",
                    None) is not None:
@@ -461,14 +463,17 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
                     afd_metadata=afd_metadata,
                     num_tokens=num_tokens_across_dp[0],
                     num_tokens_across_dp=num_tokens_across_dp,
-                    afd_comm_stream=self.afd_comm_stream):
+                    afd_comm_stream=self.afd_comm_stream_list[0]):
             forward_context = get_forward_context()
             forward_context.ffn_has_pending_multistream_send = False
+            forward_context.ffn_pending_send_by_ubatch = [False] * num_ubatches
             for layer_idx in range(0, self.num_layers):
                 for ubatch_idx in range(num_ubatches):
                     forward_context.ubatch_idx = ubatch_idx
                     if ubatch_idx < len(self.afd_comm_event_list):
                         forward_context.afd_comm_event = self.afd_comm_event_list[ubatch_idx]
+                    if ubatch_idx < len(self.afd_comm_stream_list):
+                        forward_context.afd_comm_stream = self.afd_comm_stream_list[ubatch_idx]
                     # recv
                     afd_connector_data = self.connector.create_recv_metadata(
                         dp_metadata_list=dp_metadata_list,
@@ -510,13 +515,17 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
             # This keeps startup/capture stage stable while preserving in-step overlap.
             if self.afd_config.is_multistream and \
                getattr(forward_context, "ffn_has_pending_multistream_send", False):
-                comm_event = getattr(forward_context, "afd_comm_event", None)
-                if comm_event is not None:
-                    torch.npu.current_stream().wait_event(comm_event)
-                    # wait_event is async. During startup/warmup (non-capture),
-                    # enforce host-visible completion to avoid phase handover hangs.
-                    if self.use_aclgraph and aclgraph_runtime_mode == CUDAGraphMode.NONE:
-                        torch.npu.current_stream().synchronize()
+                pending_by_ubatch = getattr(forward_context, "ffn_pending_send_by_ubatch", [])
+                curr_stream = torch.npu.current_stream()
+                for pending_ubatch_idx, pending in enumerate(pending_by_ubatch):
+                    if pending and pending_ubatch_idx < len(self.afd_comm_event_list):
+                        curr_stream.wait_event(self.afd_comm_event_list[pending_ubatch_idx])
+                        pending_by_ubatch[pending_ubatch_idx] = False
+                # wait_event is async. During startup/warmup (non-capture),
+                # enforce host-visible completion to avoid phase handover hangs.
+                if self.use_aclgraph and aclgraph_runtime_mode == CUDAGraphMode.NONE:
+                    curr_stream.synchronize()
+                forward_context.ffn_pending_send_by_ubatch = pending_by_ubatch
                 forward_context.ffn_has_pending_multistream_send = False
         return rank_ffn_output
 
