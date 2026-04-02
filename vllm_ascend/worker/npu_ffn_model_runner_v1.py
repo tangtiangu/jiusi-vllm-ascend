@@ -464,11 +464,6 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
             for layer_idx in range(0, self.num_layers):
                 for ubatch_idx in range(num_ubatches):
                     forward_context = get_forward_context()
-                    
-                    if getattr(self, "afd_comm_events", None) is None or len(self.afd_comm_events) != num_ubatches:
-                        self.afd_comm_events = [torch.npu.Event() for _ in range(num_ubatches)]
-                        
-                    forward_context.afd_comm_event = self.afd_comm_events[ubatch_idx]
 
                     # recv
                     afd_connector_data = self.connector.create_recv_metadata(
@@ -510,9 +505,7 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
             
             if self.afd_config.is_multistream:
                 curr_stream = torch.npu.current_stream()
-                for ubatch_idx in range(num_ubatches):
-                    if hasattr(self, "afd_comm_events") and len(self.afd_comm_events) > ubatch_idx:
-                        self.afd_comm_events[ubatch_idx].wait(curr_stream)
+                curr_stream.wait_stream(self.afd_comm_stream)
 
         return rank_ffn_output
 

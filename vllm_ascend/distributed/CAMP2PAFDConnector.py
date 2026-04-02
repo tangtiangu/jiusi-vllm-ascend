@@ -308,10 +308,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
     def send_ffn_output(self, ffn_output: torch.Tensor, metadata: CAMP2PAFDConnectorMetadata, **kwargs):
         ubatch_idx = kwargs.get('ubatch_idx', 0)
         comm_stream = get_forward_context().afd_comm_stream
-        if hasattr(get_forward_context(), "afd_comm_events"):
-            comm_event = get_forward_context().afd_comm_events[ubatch_idx]
-        else:
-            comm_event = get_forward_context().afd_comm_event
         batch_size = metadata.batch_size
         h = metadata.h
         k = metadata.k
@@ -331,8 +327,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                                           expert_rank_size=self.ffn_size, attention_rank_size=self.attn_size,
                                           rank=self.rank, group_ep=groupEp,
                                           aiv_num=aiv_num)
-            if multistream_enable:
-                comm_event.record(comm_stream)
 
         return
 
@@ -356,11 +350,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             compute_gate = 1 if getattr(self.config.afd_config, 'compute_gate_on_attention', True) else 0
 
         groupEp = _get_group_ep(ubatch_idx, self.hccl_comm_name, self.hccl_comm_name2, self.hccl_comm_name3)
-        
-        if hasattr(get_forward_context(), "afd_comm_events"):
-            comm_event = get_forward_context().afd_comm_events[ubatch_idx]
-        else:
-            comm_event = get_forward_context().afd_comm_event
 
         outputs = torch.ops.umdk_cam_op_lib.a2e(x=torch.tensor([], dtype=torch.bfloat16, device='npu'),
                                                 expert_ids=torch.tensor([], dtype=torch.int32, device='npu'),
@@ -724,7 +713,7 @@ def cam_recv_ffn_output_impl(hidden_states: torch.Tensor,
     handle = cam_metadata.handle
 
     groupEp = _get_group_ep(ubatch_idx, hccl_comm_name, hccl_comm_name2, hccl_comm_name3)
-
+    
     if multistream_enable:
         curr_stream = torch.npu.current_stream()
         comm_event.wait(curr_stream)
