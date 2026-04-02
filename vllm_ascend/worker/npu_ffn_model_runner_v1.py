@@ -17,7 +17,7 @@ from vllm.distributed.afd_transfer.afd_connector.factory import (
 from vllm.distributed.communication_op import tensor_model_parallel_all_gather
 from vllm.distributed.parallel_state import (get_tensor_model_parallel_rank, get_tensor_model_parallel_world_size,
                                              get_world_group,is_global_first_rank)
-from vllm.forward_context import set_forward_context, BatchDescriptor, AFDMetadata
+from vllm.forward_context import set_forward_context, BatchDescriptor, AFDMetadata, get_forward_context
 from vllm.logger import init_logger
 from vllm.utils.mem_constants import GiB_bytes
 from vllm.utils.mem_utils import DeviceMemoryProfiler
@@ -84,6 +84,13 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
         self.connector.init_afd_connector()
         self.attn_size = self.connector.attn_size
         self.ffn_size = self.connector.ffn_size
+        self.afd_comm_event_list = []
+        num_ubatches = max(1, self.parallel_config.num_ubatches)
+        for _ in range(num_ubatches):
+            event = torch.npu.Event()
+            # Prime the event to make the first recv_attn_output wait a no-op.
+            event.record(torch.npu.current_stream())
+            self.afd_comm_event_list.append(event)
         print(f'attn_size = {self.attn_size},ffn_size = {self.ffn_size}')
         if getattr(self.model_config.hf_config, "text_config",
                    None) is not None:
@@ -456,9 +463,14 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
                     model_instance=self.model,
                     afd_metadata=afd_metadata,
                     num_tokens=num_tokens_across_dp[0],
-                    num_tokens_across_dp=num_tokens_across_dp):
+                    num_tokens_across_dp=num_tokens_across_dp,
+                    afd_comm_stream=self.afd_comm_stream):
             for layer_idx in range(0, self.num_layers):
                 for ubatch_idx in range(num_ubatches):
+                    forward_context = get_forward_context()
+                    forward_context.ubatch_idx = ubatch_idx
+                    if ubatch_idx < len(self.afd_comm_event_list):
+                        forward_context.afd_comm_event = self.afd_comm_event_list[ubatch_idx]
                     # recv
                     afd_connector_data = self.connector.create_recv_metadata(
                         dp_metadata_list=dp_metadata_list,
