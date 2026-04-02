@@ -507,6 +507,13 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
                     # send
                     self.connector.send_ffn_output(rank_ffn_output, afd_connector_data, ubatch_idx=ubatch_idx)
                     print(f'cam send_ffn_output success ,layer id is {layer_idx},ubatch_idx is {ubatch_idx}', flush=True)
+            
+            if self.afd_config.is_multistream:
+                curr_stream = torch.npu.current_stream()
+                for ubatch_idx in range(num_ubatches):
+                    if hasattr(self, "afd_comm_events") and len(self.afd_comm_events) > ubatch_idx:
+                        self.afd_comm_events[ubatch_idx].wait(curr_stream)
+
         return rank_ffn_output
 
     def _run_ffn_computation(self,
