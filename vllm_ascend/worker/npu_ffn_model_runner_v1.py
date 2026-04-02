@@ -513,6 +513,10 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
                 comm_event = getattr(forward_context, "afd_comm_event", None)
                 if comm_event is not None:
                     torch.npu.current_stream().wait_event(comm_event)
+                    # wait_event is async. During startup/warmup (non-capture),
+                    # enforce host-visible completion to avoid phase handover hangs.
+                    if self.use_aclgraph and aclgraph_runtime_mode == CUDAGraphMode.NONE:
+                        torch.npu.current_stream().synchronize()
                 forward_context.ffn_has_pending_multistream_send = False
         return rank_ffn_output
 

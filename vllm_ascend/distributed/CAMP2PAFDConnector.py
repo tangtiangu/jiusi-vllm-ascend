@@ -77,6 +77,11 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                self.config.compilation_config.mode == CompilationMode.VLLM_COMPILE and \
                not self.config.model_config.enforce_eager
 
+    def _get_total_num_layers(self) -> int:
+        if getattr(self.hf_config, "text_config", None) is not None:
+            return self.hf_config.text_config.num_hidden_layers
+        return self.hf_config.num_hidden_layers
+
     def close(self) -> None:
         """Close the connector and release resources."""
         # destroy process group
@@ -335,6 +340,14 @@ class CAMP2PAFDConnector(AFDConnectorBase):
             if multistream_enable and comm_event is not None:
                 comm_event.record(comm_stream)
                 forward_context.ffn_has_pending_multistream_send = True
+                # Graph capture requires every side stream to be joined back.
+                # For the last layer there is no later op to consume this event.
+                runtime_mode = getattr(forward_context, "cudagraph_runtime_mode", CUDAGraphMode.NONE)
+                is_capture_mode = runtime_mode != CUDAGraphMode.NONE
+                is_last_layer = hasattr(metadata, "layer_idx") and \
+                    metadata.layer_idx == self._get_total_num_layers() - 1
+                if is_capture_mode and is_last_layer:
+                    comm_event.wait(curr_stream)
 
         return
 
