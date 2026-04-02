@@ -77,11 +77,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                self.config.compilation_config.mode == CompilationMode.VLLM_COMPILE and \
                not self.config.model_config.enforce_eager
 
-    def _get_total_num_layers(self) -> int:
-        if getattr(self.hf_config, "text_config", None) is not None:
-            return self.hf_config.text_config.num_hidden_layers
-        return self.hf_config.num_hidden_layers
-
     def close(self) -> None:
         """Close the connector and release resources."""
         # destroy process group
@@ -339,12 +334,7 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                                         aiv_num=aiv_num)
             if multistream_enable and comm_event is not None:
                 comm_event.record(comm_stream)
-                # In graph capture, the last multistream e2a has no next recv
-                # to consume this event. Join comm stream back explicitly.
-                is_last_layer = hasattr(metadata, "layer_idx") and \
-                    metadata.layer_idx == self._get_total_num_layers() - 1
-                if is_last_layer:
-                    comm_event.wait(curr_stream)
+                forward_context.ffn_has_pending_multistream_send = True
 
         return
 

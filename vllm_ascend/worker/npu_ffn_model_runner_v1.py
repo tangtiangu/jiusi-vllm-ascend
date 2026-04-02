@@ -462,9 +462,10 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
                     num_tokens=num_tokens_across_dp[0],
                     num_tokens_across_dp=num_tokens_across_dp,
                     afd_comm_stream=self.afd_comm_stream):
+            forward_context = get_forward_context()
+            forward_context.ffn_has_pending_multistream_send = False
             for layer_idx in range(0, self.num_layers):
                 for ubatch_idx in range(num_ubatches):
-                    forward_context = get_forward_context()
                     forward_context.ubatch_idx = ubatch_idx
                     if ubatch_idx < len(self.afd_comm_event_list):
                         forward_context.afd_comm_event = self.afd_comm_event_list[ubatch_idx]
@@ -505,6 +506,14 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
                     # send
                     self.connector.send_ffn_output(rank_ffn_output, afd_connector_data, ubatch_idx=ubatch_idx)
                     print(f'cam send_ffn_output success ,layer id is {layer_idx},ubatch_idx is {ubatch_idx}', flush=True)
+            # Flush the last multistream f2a send before exiting current step.
+            # This keeps startup/capture stage stable while preserving in-step overlap.
+            if self.afd_config.is_multistream and \
+               getattr(forward_context, "ffn_has_pending_multistream_send", False):
+                comm_event = getattr(forward_context, "afd_comm_event", None)
+                if comm_event is not None:
+                    torch.npu.current_stream().wait_event(comm_event)
+                forward_context.ffn_has_pending_multistream_send = False
         return rank_ffn_output
 
     def _run_ffn_computation(self,
