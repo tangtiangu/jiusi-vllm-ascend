@@ -363,18 +363,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         else:
             compute_gate = 1 if getattr(self.config.afd_config, 'compute_gate_on_attention', True) else 0
 
-        # Wait only when previous layer has launched multistream e2a.
-        # In graph capture mode, waiting without an in-graph record task
-        # (e.g., layer 0) will trigger rtStreamWaitEvent errors.
-        forward_context = get_forward_context()
-        prev_layer_idx = metadata.layer_idx - 1 if hasattr(metadata, "layer_idx") else -1
-        prev_layer_multistream = prev_layer_idx > self.hf_config.first_k_dense_replace
-        if self.config.afd_config.is_multistream and prev_layer_multistream:
-            comm_event = getattr(forward_context, "afd_comm_event", None)
-            if comm_event is not None:
-                curr_stream = torch.npu.current_stream()
-                comm_event.wait(curr_stream)
-
         groupEp = _get_group_ep(ubatch_idx, self.hccl_comm_name, self.hccl_comm_name2, self.hccl_comm_name3)
         outputs = torch.ops.umdk_cam_op_lib.a2e(x=torch.tensor([], dtype=torch.bfloat16, device='npu'),
                                                 expert_ids=torch.tensor([], dtype=torch.int32, device='npu'),
