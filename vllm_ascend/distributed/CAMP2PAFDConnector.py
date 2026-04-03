@@ -304,6 +304,19 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                                                   self.attn_size,
                                                   self.config.afd_config.is_multistream)
 
+    def _should_enable_ffn_multistream(self,
+                                       metadata: CAMP2PAFDConnectorMetadata,
+                                       forward_context: ForwardContext) -> bool:
+        # Keep parity with A-side masking: dense layers and the following
+        # layer stay on the default stream.
+        if not self.config.afd_config.is_multistream:
+            return False
+        if hasattr(metadata, 'layer_idx') and \
+           metadata.layer_idx <= self.hf_config.first_k_dense_replace:
+            return False
+        # Conservative guard: only enable F-side masking for DBO ubatch path.
+        return getattr(forward_context, "num_ubatches", 1) > 1
+
     # MOE发给ATTN(MOE发送)
     def send_ffn_output(self, ffn_output: torch.Tensor, metadata: CAMP2PAFDConnectorMetadata, **kwargs):
         ubatch_idx = kwargs.get('ubatch_idx', 0)
@@ -316,17 +329,9 @@ class CAMP2PAFDConnector(AFDConnectorBase):
         handle = metadata.handle
 
         groupEp = _get_group_ep(ubatch_idx, self.hccl_comm_name, self.hccl_comm_name2, self.hccl_comm_name3)
-        # Keep parity with A-side multistream masking:
-        # dense layers and the following layer run on default stream.
-        multistream_enable = self.config.afd_config.is_multistream
-        if hasattr(metadata, 'layer_idx') and metadata.layer_idx <= self.hf_config.first_k_dense_replace:
-            multistream_enable = False
-        # Conservative guard: only enable F-side multistream masking when
-        # DBO ubatch splitting is active. Non-ubatch path is more sensitive
-        # to startup/capture phase handover and may deadlock.
         forward_context = get_forward_context()
-        if getattr(forward_context, "num_ubatches", 1) <= 1:
-            multistream_enable = False
+        multistream_enable = self._should_enable_ffn_multistream(
+            metadata, forward_context)
 
         comm_stream = getattr(forward_context, "afd_comm_stream", None)
         comm_event = getattr(forward_context, "afd_comm_event", None)
@@ -348,7 +353,6 @@ class CAMP2PAFDConnector(AFDConnectorBase):
                                         aiv_num=aiv_num)
             if multistream_enable and comm_event is not None:
                 comm_event.record(comm_stream)
-                forward_context.ffn_has_pending_multistream_send = True
                 pending_by_ubatch = getattr(forward_context, "ffn_pending_send_by_ubatch", None)
                 if isinstance(pending_by_ubatch, list) and ubatch_idx < len(pending_by_ubatch):
                     pending_by_ubatch[ubatch_idx] = True

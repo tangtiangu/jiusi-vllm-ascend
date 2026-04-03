@@ -84,9 +84,9 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
         self.connector.init_afd_connector()
         self.attn_size = self.connector.attn_size
         self.ffn_size = self.connector.ffn_size
+        num_ubatches = max(1, self.parallel_config.num_ubatches)
         self.afd_comm_event_list = []
         self.afd_comm_stream_list = []
-        num_ubatches = max(1, self.parallel_config.num_ubatches)
         for _ in range(num_ubatches):
             self.afd_comm_event_list.append(torch.npu.Event())
             self.afd_comm_stream_list.append(torch.npu.Stream())
@@ -434,6 +434,25 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
         else:
             return attn_num_tokens
 
+    def _set_ffn_comm_context(self, forward_context: Any, ubatch_idx: int) -> None:
+        forward_context.ubatch_idx = ubatch_idx
+        if ubatch_idx < len(self.afd_comm_event_list):
+            forward_context.afd_comm_event = self.afd_comm_event_list[ubatch_idx]
+        if ubatch_idx < len(self.afd_comm_stream_list):
+            forward_context.afd_comm_stream = self.afd_comm_stream_list[ubatch_idx]
+
+    def _flush_pending_ffn_sends(self, forward_context: Any) -> None:
+        pending_by_ubatch = getattr(forward_context, "ffn_pending_send_by_ubatch", [])
+        if not self.afd_config.is_multistream or not any(pending_by_ubatch):
+            return
+
+        curr_stream = torch.npu.current_stream()
+        for pending_ubatch_idx, pending in enumerate(pending_by_ubatch):
+            if pending and pending_ubatch_idx < len(self.afd_comm_event_list):
+                curr_stream.wait_event(self.afd_comm_event_list[pending_ubatch_idx])
+                pending_by_ubatch[pending_ubatch_idx] = False
+        forward_context.ffn_pending_send_by_ubatch = pending_by_ubatch
+
     def _ffn_forward(self,
                      aclgraph_runtime_mode: Optional[CUDAGraphMode] = None,
                      dp_metadata_list: dict | None = None):
@@ -466,15 +485,10 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
                     afd_comm_stream=self.afd_comm_stream_list[0]):
             forward_context = get_forward_context()
             forward_context.num_ubatches = num_ubatches
-            forward_context.ffn_has_pending_multistream_send = False
             forward_context.ffn_pending_send_by_ubatch = [False] * num_ubatches
             for layer_idx in range(0, self.num_layers):
                 for ubatch_idx in range(num_ubatches):
-                    forward_context.ubatch_idx = ubatch_idx
-                    if ubatch_idx < len(self.afd_comm_event_list):
-                        forward_context.afd_comm_event = self.afd_comm_event_list[ubatch_idx]
-                    if ubatch_idx < len(self.afd_comm_stream_list):
-                        forward_context.afd_comm_stream = self.afd_comm_stream_list[ubatch_idx]
+                    self._set_ffn_comm_context(forward_context, ubatch_idx)
                     # recv
                     afd_connector_data = self.connector.create_recv_metadata(
                         dp_metadata_list=dp_metadata_list,
@@ -514,16 +528,7 @@ class NPUFFNModelRunner(NPUModelRunner,GPUFFNModelRunner):
                     print(f'cam send_ffn_output success ,layer id is {layer_idx},ubatch_idx is {ubatch_idx}', flush=True)
             # Flush the last multistream f2a send before exiting current step.
             # This keeps startup/capture stage stable while preserving in-step overlap.
-            if self.afd_config.is_multistream and \
-               getattr(forward_context, "ffn_has_pending_multistream_send", False):
-                pending_by_ubatch = getattr(forward_context, "ffn_pending_send_by_ubatch", [])
-                curr_stream = torch.npu.current_stream()
-                for pending_ubatch_idx, pending in enumerate(pending_by_ubatch):
-                    if pending and pending_ubatch_idx < len(self.afd_comm_event_list):
-                        curr_stream.wait_event(self.afd_comm_event_list[pending_ubatch_idx])
-                        pending_by_ubatch[pending_ubatch_idx] = False
-                forward_context.ffn_pending_send_by_ubatch = pending_by_ubatch
-                forward_context.ffn_has_pending_multistream_send = False
+            self._flush_pending_ffn_sends(forward_context)
         return rank_ffn_output
 
     def _run_ffn_computation(self,
