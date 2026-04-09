@@ -380,6 +380,7 @@ class NPUModelRunner(GPUModelRunner):
         self.afd_comm_stream = torch.npu.Stream()
         
         self.prof = None
+        self.step_num = 0
         if envs_ascend.VLLM_ASCEND_MODEL_RUNNER_PROFILER_ENABLE:
             experimental_config = torch_npu.profiler._ExperimentalConfig(
                 export_type=torch_npu.profiler.ExportType.Text,
@@ -1629,6 +1630,8 @@ class NPUModelRunner(GPUModelRunner):
     ) -> Union[ModelRunnerOutput, IntermediateTensors] | None:
         if self.prof is not None:
             self.prof.step()
+            self.step_num = self.step_num + 1
+            logger.info(f"execute_model Step {self.step_num}")
         if self.execute_model_state is not None:
             raise RuntimeError("State error: sample_tokens() must be called "
                                "after execute_model() returns None.")
